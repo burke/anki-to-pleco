@@ -10,42 +10,48 @@ module AnkiToPleco
       @anki = anki
       @pleco = pleco
 
-      @anki_words = anki.words.to_a.map(&:word)
-      @pleco_words = pleco.words.to_a.map(&:word)
+      @anki_words = anki.words.to_a
+      @pleco_words = pleco.words.to_a
 
-      only_anki = @anki_words - @pleco_words
-      only_pleco = @pleco_words - @anki_words
+      @words = Hash.new { |h, k| h[k] = { anki: nil, pleco: nil } }
 
-      STDERR.puts("warning: #{only_anki.size} words not present in pleco")
-      STDERR.puts("warning: #{only_pleco.size} words not present in anki")
+      @anki_words.each do |w|
+        @words[w.word][:anki] = w
+      end
 
-      @words = @anki_words & @pleco_words
-    end
-
-    def run
-      anki_words = @anki.words
-      pleco_words = @pleco.words
-      @words.each do |word|
-        run_word(
-          anki_words.detect  { |w| w.word == word },
-          pleco_words.detect { |w| w.word == word },
-        )
+      @pleco_words.each do |w|
+        @words[w.word][:pleco] = w
       end
     end
 
+    def run
+      @words.each do |w, h|
+        run_word(h[:anki], h[:pleco])
+      end
+    end
+
+    $neato = 0
+    at_exit {
+      puts $neato
+    }
+
     def run_word(anki_word, pleco_word)
+      unless anki_word && pleco_word
+        unless pleco_word
+          puts anki_word.word
+          $neato += 1
+        end
+        return
+      end
+
       a_r = @anki.recognition_card(anki_word)
       a_p = @anki.production_card(anki_word)
 
       p_r = @pleco.recognition_card(pleco_word)
       p_p = @pleco.production_card(pleco_word)
 
-      puts a_p.pleco_fields.inspect
-
-      # puts a_r.inspect
-      # puts a_p.inspect
-      # puts p_r.inspect
-      # puts p_p.inspect
+      p_r.update_scores(a_r, @pleco)
+      p_p.update_scores(a_p, @pleco)
     end
   end
 
@@ -111,6 +117,8 @@ module AnkiToPleco
       card(word, 1)
     end
 
+    CRT = 1508184000
+
     Card = Struct.new(
       :revlog_entries,
       :first_review, :last_review, :successes, :failures,
@@ -120,8 +128,6 @@ module AnkiToPleco
         [pleco_score, pleco_difficulty, pleco_history, pleco_correct, pleco_incorrect, pleco_reviewed, pleco_firstreviewedtime, pleco_lastreviewedtime, pleco_scoreinctime, pleco_scoredectime]
       end
 
-      CRT = 1508184000
-
       def pleco_score # TODO
         if queue == 2
           due_ts = CRT + due * 86400
@@ -129,7 +135,7 @@ module AnkiToPleco
           diff = due_ts - now_ts
           return((100 * diff) / 86400)
         end
-        raise
+        return 100
       end
 
       def pleco_difficulty
@@ -192,30 +198,53 @@ module AnkiToPleco
   class PlecoDB
     Word = Struct.new(:word, :id)
 
+    Card = Struct.new(:cid, :w, :rw, :tbl) do
+      def update_scores(anki_card, pleco_db)
+        pleco_db.db.execute("DELETE FROM `#{tbl}` WHERE card = ?", cid)
+        pleco_db.db.execute(
+          "INSERT INTO `#{tbl}` (card, score, difficulty, history, correct, incorrect, reviewed, firstreviewedtime, lastreviewedtime, scoreinctime, scoredectime, sincelastchange) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          cid,
+          anki_card.pleco_score,
+          anki_card.pleco_difficulty,
+          anki_card.pleco_history,
+          anki_card.pleco_correct,
+          anki_card.pleco_incorrect,
+          anki_card.pleco_reviewed,
+          anki_card.pleco_firstreviewedtime,
+          anki_card.pleco_lastreviewedtime,
+          anki_card.pleco_scoreinctime,
+          anki_card.pleco_scoredectime,
+          0,
+        )
+      end
+    end
+
+    attr_reader :db
+
     def initialize(path: File.expand_path('pleco.sqlite3', ROOT))
+      @ww = {}
+      @id = {}
+      @wwi = {}
       @db = SQLite3::Database.new(path)
     end
 
     def words
       return to_enum(:words) unless block_given?
       @db.execute("SELECT hw, id FROM pleco_flash_cards") do |row|
+        @id[row[0]] = row[1]
+        @id[row[0].tr('@', '')] = row[1]
+        @ww[row[0]] = row[0].tr('@', '')
+        @wwi[row[0].tr('@', '')] = row[0]
         yield Word.new(row[0].tr('@', ''), row[1])
       end
     end
 
-    def card(word, tbl)
-      @db.execute("SELECT * FROM `#{tbl}` WHERE card = ?", word.id) do |row|
-        return row
-      end
-      nil
-    end
-
     def recognition_card(word)
-      card(word, 'pleco_flash_scores_1')
+      Card.new(@id[word.word], word, @ww[word.word], 'pleco_flash_scores_1')
     end
 
     def production_card(word)
-      card(word, 'pleco_flash_scores_2')
+      Card.new(@id[word], word, @ww[word.word], 'pleco_flash_scores_2')
     end
   end
 end
