@@ -131,7 +131,7 @@ module AnkiToPleco
       def pleco_score # TODO
         if queue == 2
           due_ts = CRT + due * 86400
-          now_ts = Time.now.to_i
+          now_ts = last_review
           diff = due_ts - now_ts
           return((100 * diff) / 86400)
         end
@@ -200,10 +200,9 @@ module AnkiToPleco
 
     Card = Struct.new(:cid, :w, :rw, :tbl) do
       def update_scores(anki_card, pleco_db)
-        pleco_db.db.execute("DELETE FROM `#{tbl}` WHERE card = ?", cid)
+        puts ">#{cid.inspect}"
         pleco_db.db.execute(
-          "INSERT INTO `#{tbl}` (card, score, difficulty, history, correct, incorrect, reviewed, firstreviewedtime, lastreviewedtime, scoreinctime, scoredectime, sincelastchange) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          cid,
+          "INSERT INTO `#{tbl}` (card, score, difficulty, history, correct, incorrect, reviewed, firstreviewedtime, lastreviewedtime, scoreinctime, scoredectime, sincelastchange) VALUES (#{cid}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           anki_card.pleco_score,
           anki_card.pleco_difficulty,
           anki_card.pleco_history,
@@ -221,11 +220,13 @@ module AnkiToPleco
 
     attr_reader :db
 
-    def initialize(path: File.expand_path('pleco.sqlite3', ROOT))
+    def initialize(path: File.expand_path('Pleco Flash C.pqb', ROOT))
       @ww = {}
       @id = {}
       @wwi = {}
       @db = SQLite3::Database.new(path)
+      @db.execute("DELETE FROM pleco_flash_scores_1")
+      @db.execute("DELETE FROM pleco_flash_scores_2")
     end
 
     def words
@@ -244,7 +245,7 @@ module AnkiToPleco
     end
 
     def production_card(word)
-      Card.new(@id[word], word, @ww[word.word], 'pleco_flash_scores_2')
+      Card.new(@id[word.word], word, @ww[word.word], 'pleco_flash_scores_2')
     end
   end
 end
