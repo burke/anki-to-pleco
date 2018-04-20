@@ -40,11 +40,12 @@ module AnkiToPleco
       p_r = @pleco.recognition_card(pleco_word)
       p_p = @pleco.production_card(pleco_word)
 
-      puts a_r.inspect
+      puts a_p.pleco_fields.inspect
+
+      # puts a_r.inspect
       # puts a_p.inspect
       # puts p_r.inspect
       # puts p_p.inspect
-
     end
   end
 
@@ -64,15 +65,17 @@ module AnkiToPleco
     end
 
     class RevlogAccumulator
-      attr_reader :first_ts, :last_ts, :successes, :failures
+      attr_reader :first_ts, :last_ts, :successes, :failures, :entries
       def initialize
         @first_ts  = Time.now.to_i * 1000
         @last_ts   = 0
         @successes = 0
         @failures  = 0
+        @entries   = []
       end
 
       def add(id, ease)
+        @entries << [id, ease]
         if id < @first_ts
           @first_ts = id
         end
@@ -109,19 +112,74 @@ module AnkiToPleco
     end
 
     Card = Struct.new(
+      :revlog_entries,
       :first_review, :last_review, :successes, :failures,
-      :due, :interval, :factor,
-    )
+      :queue, :due, :interval, :factor,
+    ) do
+      def pleco_fields
+        [pleco_score, pleco_difficulty, pleco_history, pleco_correct, pleco_incorrect, pleco_reviewed, pleco_firstreviewedtime, pleco_lastreviewedtime, pleco_scoreinctime, pleco_scoredectime]
+      end
+
+      CRT = 1508184000
+
+      def pleco_score # TODO
+        if queue == 2
+          due_ts = CRT + due * 86400
+          now_ts = Time.now.to_i
+          diff = due_ts - now_ts
+          return((100 * diff) / 86400)
+        end
+        raise
+      end
+
+      def pleco_difficulty
+        factor / 25
+      end
+
+      def pleco_history
+        revlog_entries.map { |_, ease| [1, 1, 4, 5, 6][ease].to_s }.join
+      end
+
+      def pleco_correct
+        revlog_entries.count { |c| c[1] != 1 }
+      end
+
+      def pleco_incorrect
+        revlog_entries.count { |c| c[1] == 1 }
+      end
+
+      def pleco_reviewed
+        pleco_correct + pleco_incorrect
+      end
+
+      def pleco_firstreviewedtime
+        first_review
+      end
+
+      def pleco_lastreviewedtime
+        last_review
+      end
+
+      def pleco_scoreinctime
+        revlog_entries.last[1] == 1 ? 0 : last_review
+      end
+
+      def pleco_scoredectime
+        revlog_entries.last[1] == 1 ? last_review : 0
+      end
+    end
 
     def card(word, ord)
-      @db.execute("SELECT id, due, ivl, factor FROM cards WHERE nid = ? AND ord = ?", word.note_id, ord) do |row|
-        id, due, interval, factor = row
+      @db.execute("SELECT id, queue, due, ivl, factor FROM cards WHERE nid = ? AND ord = ?", word.note_id, ord) do |row|
+        id, queue, due, interval, factor = row
         revlog_entry = revlog[id]
         return Card.new(
+          revlog_entry.entries,
           revlog_entry.first_ts / 1000,
           revlog_entry.last_ts / 1000,
           revlog_entry.successes,
           revlog_entry.failures,
+          queue,
           due,
           interval,
           factor,
